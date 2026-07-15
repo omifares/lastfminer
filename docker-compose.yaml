@@ -1,0 +1,10 @@
+services:
+  lastfm-miner:
+    build: .
+    container_name: lastfm-miner
+    restart: unless-stopped
+    ports:
+      - "4849:8080"
+    volumes:
+      - ./config.json:/app/config.json
+      - /media/HDD/navidrome/musics:/musics

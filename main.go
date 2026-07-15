@@ -30,7 +30,7 @@ var (
 	appConfig    Config
 	lastRecs     []Recommendation
 	queue        = make(chan Recommendation, MAX_QUEUE)
-	OutputDir    = "/media/HDD/navidrome/musics"
+	OutputDir    = "/musics"
 	tmpl         = template.Must(template.ParseFiles("templates/index.html"))
 	clients      = make(map[chan string]bool)
 	clientsMutex sync.Mutex
