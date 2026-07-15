@@ -7,9 +7,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,7 +115,7 @@ func main() {
 	// Nova rota para as notificações em tempo real
 	http.HandleFunc("/events", handleEvents)
 
-	log.Println("Servidor lastfm-miner a correr em http://localhost:8080")
+	log.Println("Servidor lastfm-miner em http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -164,8 +166,8 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	saveConfig()
-	log.Printf("⚙️ Configurações atualizadas: User=%s, Limite=%d", appConfig.Username, appConfig.Limit)
-	w.Write([]byte("✓ Configurações e limite salvos com sucesso!"))
+	log.Printf("⚙️ Configurações salvas: User=%s, LidarrURL=%s, Limite=%d", appConfig.Username, appConfig.Limit)
+	w.Write([]byte("✓ Credenciais salvas e sincronizadas!"))
 }
 
 func handleSync(w http.ResponseWriter, r *http.Request) {
@@ -259,23 +261,134 @@ func fetchRecommendations() ([]Recommendation, error) {
 // Downloader
 
 func downloadWithYtdlp(artist, track string) error {
-	artistFolder := fmt.Sprintf("%s/%s/Single_Downloads", OutputDir, artist)
-	_ = os.MkdirAll(artistFolder, 0755)
+	album, year, coverURL, trackNum := fetchMetadata(artist, track)
+
+	var albumFolderName string
+	if year != "" {
+		albumFolderName = fmt.Sprintf("%s (%s)", album, year)
+	} else {
+		albumFolderName = album
+	}
+
+	safeArtist := strings.ReplaceAll(artist, "/", "-")
+	safeAlbum := strings.ReplaceAll(album, "/", "-")
+	safeTrack := strings.ReplaceAll(track, "/", "-")
+
+	albumFolder := fmt.Sprintf("%s/%s/%s", OutputDir, safeArtist, albumFolderName)
+	_ = os.MkdirAll(albumFolder, 0755)
+
+	if coverURL != "" {
+		coverPath := fmt.Sprintf("%s/cover.jpg", albumFolder)
+		if _, err := os.Stat(coverPath); os.IsNotExist(err) {
+			if resp, err := http.Get(coverURL); err == nil {
+				defer resp.Body.Close()
+				if out, err := os.Create(coverPath); err == nil {
+					io.Copy(out, resp.Body)
+					out.Close()
+				}
+			}
+		}
+	}
 
 	searchQuery := fmt.Sprintf("ytsearch1:%s - %s audio", artist, track)
-	cmd := exec.Command("yt-dlp",
+
+	// Padrão: Artist - Album - Track Number - Track name.mp3
+	var fileNameTemplate string
+	if trackNum > 0 {
+		fileNameTemplate = fmt.Sprintf("%s/%s - %s - %02d - %s.%%(ext)s", albumFolder, safeArtist, safeAlbum, trackNum, safeTrack)
+	} else {
+		fileNameTemplate = fmt.Sprintf("%s/%s - %s - %s.%%(ext)s", albumFolder, safeArtist, safeAlbum, safeTrack)
+	}
+
+	cmdArgs := []string{
 		"--extractor-args", "youtube:player_client=ios,android,mweb",
 		"-x", "--audio-format", "mp3",
 		"--audio-quality", "0",
-		"--embed-thumbnail",
 		"--add-metadata",
-		"-o", fmt.Sprintf("%s/%%(title)s.%%(ext)s", artistFolder),
-		searchQuery,
-	)
+		"--parse-metadata", fmt.Sprintf("%s:%%(artist)s", artist),
+		"--parse-metadata", fmt.Sprintf("%s:%%(album)s", album),
+		"--parse-metadata", fmt.Sprintf("%s:%%(title)s", track),
+	}
+
+	if year != "" {
+		cmdArgs = append(cmdArgs, "--parse-metadata", fmt.Sprintf("%s:%%(date)s", year))
+	}
+
+	if trackNum > 0 {
+		cmdArgs = append(cmdArgs, "--parse-metadata", fmt.Sprintf("%d:%%(track_number)s", trackNum))
+	}
+
+	cmdArgs = append(cmdArgs, "-o", fileNameTemplate, searchQuery)
+	cmd := exec.Command("yt-dlp", cmdArgs...)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v | Log: %s", err, string(out))
+		return fmt.Errorf("Erro no yt-dlp: %v | Log: %s", err, string(out))
 	}
+
+	var finalMp3Path string
+	if trackNum > 0 {
+		finalMp3Path = fmt.Sprintf("%s/%s - %s - %02d - %s.mp3", albumFolder, safeArtist, safeAlbum, trackNum, safeTrack)
+	} else {
+		finalMp3Path = fmt.Sprintf("%s/%s - %s - %s.mp3", albumFolder, safeArtist, safeAlbum, safeTrack)
+	}
+
+	coverPath := fmt.Sprintf("%s/cover.jpg", albumFolder)
+
+	mid3v2Args := []string{
+		fmt.Sprintf("--picture=%s", coverPath),
+		finalMp3Path,
+	}
+
+	cmdMid3 := exec.Command("mid3v2", mid3v2Args...)
+	outMid3, errMid3 := cmdMid3.CombinedOutput()
+
+	if errMid3 != nil {
+		log.Printf("Aviso: Falha ao embutir capa com mid3v2: %v | Log: %s", errMid3, string(outMid3))
+	}
+
 	return nil
+}
+
+// Metadata
+
+func fetchMetadata(artist, track string) (string, string, string, int) {
+	query := url.QueryEscape(artist + " " + track)
+	apiURL := fmt.Sprintf("https://itunes.apple.com/search?term=%s&entity=song&limit=1", query)
+
+	broadcast(`<div class="text-blue-400 border-l-2 border-blue-500 pl-2 mb-2 animate-pulse">Obtendo metados (iTunes) ...</div>`)
+
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return "Singles", "", "", 0
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Results []struct {
+			CollectionName string `json:"collectionName"`
+			Artwork        string `json:"artworkUrl100"`
+			ReleaseDate    string `json:"releaseDate"`
+			TrackNumber    int    `json:"trackNumber"`
+		} `json:"results"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && len(result.Results) > 0 {
+		item := result.Results[0]
+		album := item.CollectionName
+
+		cover := strings.Replace(item.Artwork, "100x100bb.jpg", "600x600bb.jpg", 1)
+
+		year := ""
+		if len(item.ReleaseDate) >= 4 {
+			year = item.ReleaseDate[0:4]
+		}
+
+		album = strings.ReplaceAll(album, "/", "-")
+		album = strings.ReplaceAll(album, ":", "-")
+
+		return album, year, cover, item.TrackNumber
+	}
+
+	return "Singles", "", "", 0
 }

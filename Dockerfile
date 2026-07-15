@@ -12,8 +12,9 @@ FROM alpine:latest
 # - ffmpeg: Audio convertion
 # - nodejs: JS Runtime for yt-dlp (SABR)
 # - python3: Needed by yt-dlp
+# - py-mutagem: Used to chage mp3 cover
 # - curl: To download yt-dlp
-RUN apk add --no-cache ffmpeg nodejs python3 curl ca-certificates && \
+RUN apk add --no-cache ffmpeg nodejs python3 py3-mutagen curl ca-certificates && \
     curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp
 
