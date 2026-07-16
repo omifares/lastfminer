@@ -275,6 +275,20 @@ func downloadWithYtdlp(artist, track string) error {
 	safeTrack := strings.ReplaceAll(track, "/", "-")
 
 	albumFolder := fmt.Sprintf("%s/%s/%s", OutputDir, safeArtist, albumFolderName)
+
+	var finalMp3Path string
+	if trackNum > 0 {
+		finalMp3Path = fmt.Sprintf("%s/%s - %s - %02d - %s.mp3", albumFolder, safeArtist, safeAlbum, trackNum, safeTrack)
+	} else {
+		finalMp3Path = fmt.Sprintf("%s/%s - %s - %s.mp3", albumFolder, safeArtist, safeAlbum, safeTrack)
+	}
+
+	if _, err := os.Stat(finalMp3Path); err == nil {
+		log.Printf("▶️ [Ignorado] A faixa já existe na biblioteca Gonic: %s", finalMp3Path)
+		broadcast(fmt.Sprintf(`<div class="text-amber-500 border-l-2 border-amber-500 pl-2 mb-2">▶️ Ignorado (Já existe): %s - %s</div>`, artist, track))
+		return nil
+	}
+
 	_ = os.MkdirAll(albumFolder, 0755)
 
 	if coverURL != "" {
@@ -313,7 +327,6 @@ func downloadWithYtdlp(artist, track string) error {
 	if year != "" {
 		cmdArgs = append(cmdArgs, "--parse-metadata", fmt.Sprintf("%s:%%(date)s", year))
 	}
-
 	if trackNum > 0 {
 		cmdArgs = append(cmdArgs, "--parse-metadata", fmt.Sprintf("%d:%%(track_number)s", trackNum))
 	}
@@ -326,23 +339,12 @@ func downloadWithYtdlp(artist, track string) error {
 		return fmt.Errorf("Erro no yt-dlp: %v | Log: %s", err, string(out))
 	}
 
-	var finalMp3Path string
-	if trackNum > 0 {
-		finalMp3Path = fmt.Sprintf("%s/%s - %s - %02d - %s.mp3", albumFolder, safeArtist, safeAlbum, trackNum, safeTrack)
-	} else {
-		finalMp3Path = fmt.Sprintf("%s/%s - %s - %s.mp3", albumFolder, safeArtist, safeAlbum, safeTrack)
-	}
-
-	coverPath := fmt.Sprintf("%s/cover.jpg", albumFolder)
-
 	mid3v2Args := []string{
-		fmt.Sprintf("--picture=%s", coverPath),
+		fmt.Sprintf("--picture=%s/cover.jpg", albumFolder),
 		finalMp3Path,
 	}
-
 	cmdMid3 := exec.Command("mid3v2", mid3v2Args...)
 	outMid3, errMid3 := cmdMid3.CombinedOutput()
-
 	if errMid3 != nil {
 		log.Printf("Aviso: Falha ao embutir capa com mid3v2: %v | Log: %s", errMid3, string(outMid3))
 	}
